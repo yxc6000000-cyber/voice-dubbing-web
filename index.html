@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Dubbing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div class="main-layout">
+    <!-- Left: video + controls -->
+    <div class="left-col">
+      <!-- Header -->
+      <div class="header">
+        <h1>🎬 Voice Dubbing</h1>
+        <span class="badge" id="statusBadge">🟢 Watch Mode</span>
+      </div>
+
+      <!-- Video -->
+      <div class="video-container">
+        <video id="video" controls></video>
+        <div class="video-overlay" id="videoOverlay">
+          <div class="import-btn" id="importBtn">
+            <span class="icon">📂</span>
+            <span>Import Video</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="controls">
+        <button id="btnImport" class="btn">📂 Import Video</button>
+        <input type="file" id="fileInput" accept="video/*" hidden>
+
+        <div class="btn-group">
+          <button id="btnDub" class="btn" disabled>Start Dub</button>
+          <button id="btnPlayLatest" class="btn" disabled>Play Latest Dub</button>
+          <button id="btnPlayDub" class="btn" disabled>Play My Dub</button>
+        </div>
+
+        <label class="mute-toggle" id="muteToggle">
+          <span id="muteIcon">🔇</span>
+        </label>
+
+        <div class="spacer"></div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="timeline">
+        <span id="timeDisplay">00:00 / 00:00</span>
+        <div class="seek-wrapper">
+          <input type="range" id="seekBar" min="0" max="1000" value="0" class="seek-bar">
+        </div>
+      </div>
+
+      <!-- Loop -->
+      <div class="loop-bar">
+        <span id="loopLabel" class="loop-label">A:--:--  B:--:--</span>
+        <button id="btnSetA" class="btn-sm">Set A</button>
+        <button id="btnSetB" class="btn-sm">Set B</button>
+        <button id="btnClearLoop" class="btn-sm btn-clear-loop" title="取消循环">✕</button>
+      </div>
+    </div>
+
+    <!-- Right: clip list -->
+    <div class="right-col">
+      <div class="clip-list-header">Clips</div>
+      <div id="clipList" class="clip-list"></div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

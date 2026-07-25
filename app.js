@@ -1,0 +1,610 @@
+// ─── IndexedDB ─────────────────────────────────────────────
+const DB_NAME = 'VoiceDubbingDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'clips';
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveClips(videoKey, clips, loopA, loopB) {
+  const db = await openDB();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const store = tx.objectStore(STORE_NAME);
+  await new Promise((resolve, reject) => {
+    const delReq = store.delete(videoKey);
+    delReq.onsuccess = () => resolve();
+    delReq.onerror = () => reject(delReq.error);
+  });
+  await new Promise((resolve, reject) => {
+    const putReq = store.put({
+      id: videoKey,
+      clips: clips.map(c => ({
+        id: c.id,
+        startTime: c.startTime,
+        endTime: c.endTime,
+        data: c.blob,
+      })),
+      loopA,
+      loopB,
+    });
+    putReq.onsuccess = () => resolve();
+    putReq.onerror = () => reject(putReq.error);
+  });
+  tx.commit();
+}
+
+async function loadClips(videoKey) {
+  const db = await openDB();
+  const tx = db.transaction(STORE_NAME, 'readonly');
+  const store = tx.objectStore(STORE_NAME);
+  return new Promise((resolve, reject) => {
+    const req = store.get(videoKey);
+    req.onsuccess = () => {
+      if (req.result) resolve({ clips: req.result.clips, loopA: req.result.loopA, loopB: req.result.loopB });
+      else resolve({ clips: [], loopA: -1, loopB: -1 });
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ─── State ───────────────────────────────────────────────
+const state = {
+  videoLoaded: false,
+  videoKey: null,
+  recording: false,
+  recordStartTime: 0,
+  mediaRecorder: null,
+  recordedChunks: [],
+  clips: [],
+  mixedUrl: null,
+  loopA: -1,
+  loopB: -1,
+  loopEnabled: false,
+  dubAudio: null,
+  dubMode: null,
+};
+
+// ─── DOM refs ──────────────────────────────────────────────
+const video = document.getElementById('video');
+const fileInput = document.getElementById('fileInput');
+const importBtn = document.getElementById('importBtn');
+const btnImport = document.getElementById('btnImport');
+const btnDub = document.getElementById('btnDub');
+const btnPlayDub = document.getElementById('btnPlayDub');
+const btnPlayLatest = document.getElementById('btnPlayLatest');
+const muteToggle = document.getElementById('muteToggle');
+const muteIcon = document.getElementById('muteIcon');
+const seekBar = document.getElementById('seekBar');
+const timeDisplay = document.getElementById('timeDisplay');
+const statusBadge = document.getElementById('statusBadge');
+const btnSetA = document.getElementById('btnSetA');
+const btnSetB = document.getElementById('btnSetB');
+const btnClearLoop = document.getElementById('btnClearLoop');
+const loopLabel = document.getElementById('loopLabel');
+const overlay = document.getElementById('videoOverlay');
+const clipListEl = document.getElementById('clipList');
+
+// ─── Dub mute toggle ─────────────────────────────────────
+let dubMuted = true;
+
+muteToggle.addEventListener('click', () => {
+  dubMuted = !dubMuted;
+  muteIcon.textContent = dubMuted ? '🔇' : '🔊';
+  if (state.dubMode) video.muted = dubMuted;
+});
+
+// ─── Format helpers ──────────────────────────────────────
+function fmt(sec) {
+  if (!isFinite(sec)) return '00:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function setBadge(text, cls) {
+  statusBadge.textContent = text;
+  statusBadge.className = 'badge ' + cls;
+}
+
+function enableWhenLoaded() {
+  const ok = state.videoLoaded;
+  btnDub.disabled = !ok;
+  btnPlayDub.disabled = !(ok && state.clips.length > 0);
+  btnPlayLatest.disabled = !(ok && state.clips.length > 0);
+}
+
+function fmtLoop() {
+  return `A:${state.loopA >= 0 ? fmt(state.loopA) : '--:--'}  B:${state.loopB >= 0 ? fmt(state.loopB) : '--:--'}`;
+}
+
+// ─── Markers ─────────────────────────────────────────────
+function renderLoopMarkers() {
+  document.querySelectorAll('.loop-marker').forEach(el => el.remove());
+  if (!state.videoLoaded || !video.duration) return;
+  const wrapper = document.querySelector('.seek-wrapper');
+  if (!wrapper) return;
+  if (state.loopA >= 0) {
+    const pct = (state.loopA / video.duration) * 100;
+    const m = document.createElement('div');
+    m.className = 'loop-marker marker-a';
+    m.style.left = pct + '%';
+    wrapper.appendChild(m);
+  }
+  if (state.loopB >= 0) {
+    const pct = (state.loopB / video.duration) * 100;
+    const m = document.createElement('div');
+    m.className = 'loop-marker marker-b';
+    m.style.left = pct + '%';
+    wrapper.appendChild(m);
+  }
+}
+
+function renderClipMarkers() {
+  document.querySelectorAll('.clip-marker').forEach(el => el.remove());
+  if (!state.videoLoaded || !video.duration) return;
+  const wrapper = document.querySelector('.seek-wrapper');
+  if (!wrapper) return;
+  for (const clip of state.clips) {
+    const startPct = (clip.startTime / video.duration) * 100;
+    const endPct = (clip.endTime / video.duration) * 100;
+    const m = document.createElement('div');
+    m.className = 'clip-marker';
+    m.style.left = startPct + '%';
+    m.style.width = Math.max(0.5, endPct - startPct) + '%';
+    wrapper.appendChild(m);
+  }
+}
+
+function renderClipList() {
+  if (!clipListEl) return;
+  clipListEl.innerHTML = '';
+  for (let i = 0; i < state.clips.length; i++) {
+    const clip = state.clips[i];
+    const isActive = state.loopEnabled && state.loopA === clip.startTime && state.loopB === clip.endTime;
+    const item = document.createElement('div');
+    item.className = 'clip-item' + (isActive ? ' active' : '');
+    item.innerHTML = `<span class="clip-num">#${i + 1}</span><span class="clip-time">${fmt(clip.startTime)} - ${fmt(clip.endTime)}</span><span class="clip-play-icon">${isActive ? '⏹' : '▶'}</span><span class="clip-del" data-idx="${i}">✕</span>`;
+    item.querySelector('.clip-play-icon').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleClipLoop(clip);
+    });
+    item.querySelector('.clip-del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteClip(i);
+    });
+    clipListEl.appendChild(item);
+  }
+}
+
+function toggleClipLoop(clip) {
+  // 如果已经在 loop 这个 clip，就取消 loop
+  if (state.loopEnabled && state.loopA === clip.startTime && state.loopB === clip.endTime) {
+    state.loopEnabled = false;
+    state.loopA = -1;
+    state.loopB = -1;
+    loopLabel.textContent = fmtLoop();
+    renderLoopMarkers();
+    renderClipList();
+    video.muted = false;
+    setBadge('🟢 Watch Mode', 'watch');
+    return;
+  }
+  // 否则开始 loop 这个 clip
+  stopDubMode();
+  if (state.recording) {
+    stopRecording();
+    video.muted = false;
+  }
+  state.loopA = clip.startTime;
+  state.loopB = clip.endTime;
+  state.loopEnabled = true;
+  loopLabel.textContent = fmtLoop();
+  renderLoopMarkers();
+  renderClipList();
+  video.currentTime = clip.startTime;
+  video.muted = false;
+  video.play();
+  setBadge(`🔁 Looping clip #${state.clips.indexOf(clip) + 1}`, 'play');
+}
+
+function deleteClip(idx) {
+  const clip = state.clips[idx];
+  if (!clip) return;
+  URL.revokeObjectURL(clip.url);
+  clip.blob = null;
+  state.clips.splice(idx, 1);
+  if (state.mixedUrl && state.clips.length > 1) {
+    URL.revokeObjectURL(state.mixedUrl);
+    state.mixedUrl = null;
+  }
+  mixClips().then(() => {
+    renderClipMarkers();
+    renderClipList();
+    enableWhenLoaded();
+    if (state.clips.length === 0) {
+      stopDubMode();
+      setBadge('🟢 Watch Mode', 'watch');
+    }
+    if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+  });
+}
+
+// ─── Audio mixing ─────────────────────────────────────────
+async function mixClips() {
+  if (state.clips.length === 0) {
+    if (state.mixedUrl) URL.revokeObjectURL(state.mixedUrl);
+    state.mixedUrl = null;
+    return;
+  }
+  if (state.clips.length === 1) {
+    if (state.mixedUrl) URL.revokeObjectURL(state.mixedUrl);
+    state.mixedUrl = state.clips[0].url;
+    return;
+  }
+
+  const sampleRate = 48000;
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const bufLen = Math.ceil(video.duration * sampleRate);
+  const totalBuf = audioCtx.createBuffer(1, bufLen, sampleRate);
+  const channel = totalBuf.getChannelData(0);
+
+  for (const clip of state.clips) {
+    const resp = await fetch(clip.url);
+    const ab = await resp.arrayBuffer();
+    const decoded = await audioCtx.decodeAudioData(ab);
+    const src = decoded.getChannelData(0);
+    const offsetSamples = Math.round(clip.startTime * sampleRate);
+    for (let i = 0; i < src.length; i++) {
+      const pos = offsetSamples + i;
+      if (pos >= bufLen) break;
+      channel[pos] = src[i];
+    }
+  }
+
+  const numSamples = totalBuf.length;
+  const wav = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(wav);
+  const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+  const d = totalBuf.getChannelData(0);
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, d[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+
+  const blob = new Blob([wav], { type: 'audio/wav' });
+  if (state.mixedUrl && state.clips.length > 1) URL.revokeObjectURL(state.mixedUrl);
+  state.mixedUrl = URL.createObjectURL(blob);
+  audioCtx.close();
+}
+
+// ─── Dub audio management ─────────────────────────────────
+function stopDubMode() {
+  if (state.dubAudio) {
+    state.dubAudio.pause();
+    state.dubAudio.src = '';
+    state.dubAudio.load();
+    state.dubAudio = null;
+  }
+  state.dubMode = null;
+}
+
+function syncDubAudio() {
+  if (!state.dubAudio || !state.dubAudio.src) return;
+  if (state.dubMode === 'playLatest') return;
+  const offset = video.currentTime;
+  const diff = Math.abs(state.dubAudio.currentTime - offset);
+  if (diff > 0.5) {
+    state.dubAudio.currentTime = offset;
+  }
+}
+
+// ─── Import ──────────────────────────────────────────────
+function loadVideo(file) {
+  const url = URL.createObjectURL(file);
+  video.src = url;
+  video.load();
+  overlay.classList.add('hidden');
+  state.videoLoaded = true;
+  state.videoKey = file.name;
+  state.clips = [];
+  state.mixedUrl = null;
+  state.loopA = -1;
+  state.loopB = -1;
+  state.loopEnabled = false;
+  loopLabel.textContent = fmtLoop();
+  renderLoopMarkers();
+  renderClipMarkers();
+  renderClipList();
+  enableWhenLoaded();
+  setBadge('🟢 Watch Mode', 'watch');
+  // 自动恢复之前保存的 clip
+  restoreClips(file.name);
+}
+
+async function restoreClips(videoKey) {
+  const saved = await loadClips(videoKey);
+  if (!saved || !saved.clips || saved.clips.length === 0) {
+    setBadge('🟢 Watch Mode', 'watch');
+    return;
+  }
+  for (const item of saved.clips) {
+    const blob = item.data;
+    const url = URL.createObjectURL(blob);
+    state.clips.push({ id: item.id, blob, url, startTime: item.startTime, endTime: item.endTime });
+  }
+  await mixClips();
+  renderClipMarkers();
+  renderClipList();
+  enableWhenLoaded();
+  // 恢复 A/B 点
+  if (saved.loopA >= 0 || saved.loopB >= 0) {
+    state.loopA = saved.loopA >= 0 ? saved.loopA : -1;
+    state.loopB = saved.loopB >= 0 ? saved.loopB : -1;
+    if (state.loopA >= 0 && state.loopB >= 0) state.loopEnabled = true;
+    loopLabel.textContent = fmtLoop();
+    renderLoopMarkers();
+  }
+  setBadge(`💾 Restored ${saved.clips.length} clip(s)`, 'watch');
+}
+
+btnImport.addEventListener('click', () => fileInput.click());
+importBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => {
+  if (e.target.files.length) loadVideo(e.target.files[0]);
+});
+
+video.addEventListener('canplay', () => {
+  enableWhenLoaded();
+  timeDisplay.textContent = `00:00 / ${fmt(video.duration)}`;
+  renderLoopMarkers();
+  renderClipMarkers();
+});
+
+// ─── Playback controls ───────────────────────────────────
+video.addEventListener('timeupdate', () => {
+  if (video.duration) {
+    seekBar.value = (video.currentTime / video.duration) * 1000;
+    timeDisplay.textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+  }
+  if (state.loopEnabled && state.loopB >= 0 && state.loopA >= 0 && video.currentTime >= state.loopB) {
+    video.currentTime = state.loopA;
+    video.play();
+  }
+  syncDubAudio();
+  renderLoopMarkers();
+});
+
+seekBar.addEventListener('input', () => {
+  if (video.duration)
+    video.currentTime = (seekBar.value / 1000) * video.duration;
+});
+
+video.addEventListener('pause', () => {
+  if (state.dubAudio && !state.dubAudio.paused) state.dubAudio.pause();
+});
+video.addEventListener('play', () => {
+  if (state.dubAudio && state.dubAudio.paused && state.dubAudio.readyState >= 2) {
+    state.dubAudio.play().catch(() => {});
+  }
+});
+
+// ─── Loop ────────────────────────────────────────────────
+btnSetA.addEventListener('click', () => {
+  if (state.loopA >= 0) {
+    state.loopA = -1;
+    state.loopEnabled = false;
+    loopLabel.textContent = fmtLoop();
+    renderLoopMarkers();
+    if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+    return;
+  }
+  state.loopA = video.currentTime;
+  loopLabel.textContent = fmtLoop();
+  if (state.loopB >= 0) state.loopEnabled = true;
+  renderLoopMarkers();
+  if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+});
+
+btnSetB.addEventListener('click', () => {
+  if (state.loopB >= 0) {
+    state.loopB = -1;
+    state.loopEnabled = false;
+    loopLabel.textContent = fmtLoop();
+    renderLoopMarkers();
+    if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+    return;
+  }
+  state.loopB = video.currentTime;
+  loopLabel.textContent = fmtLoop();
+  if (state.loopA >= 0) state.loopEnabled = true;
+  renderLoopMarkers();
+  if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+});
+
+// ─── Clear loop ──────────────────────────────────────────
+btnClearLoop.addEventListener('click', () => {
+  state.loopA = -1;
+  state.loopB = -1;
+  state.loopEnabled = false;
+  loopLabel.textContent = fmtLoop();
+  renderLoopMarkers();
+  renderClipList();
+  video.muted = false;
+  setBadge('🟢 Watch Mode', 'watch');
+  if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+});
+
+// ─── Recording ───────────────────────────────────────────
+async function startRecording() {
+  if (state.recording) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.recordedChunks = [];
+    state.recordStartTime = video.currentTime;
+    state.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+    state.mediaRecorder.ondataavailable = e => {
+      if (e.data.size > 0) state.recordedChunks.push(e.data);
+    };
+
+    state.mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(state.recordedChunks, { type: 'audio/webm' });
+      const endTime = video.currentTime;
+      const url = URL.createObjectURL(blob);
+      state.clips.push({ id: crypto.randomUUID(), blob, url, startTime: state.recordStartTime, endTime });
+      await mixClips();
+      renderClipMarkers();
+      renderClipList();
+      enableWhenLoaded();
+      if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+    };
+
+    state.mediaRecorder.start();
+    state.recording = true;
+    setBadge('🔴 Recording...', 'rec');
+  } catch (err) {
+    setBadge('❌ Mic permission denied', 'watch');
+    alert('无法访问麦克风，请允许麦克风权限后重试。\n' + err.message);
+  }
+}
+
+function stopRecording() {
+  if (!state.recording || !state.mediaRecorder) return Promise.resolve();
+  return new Promise(resolve => {
+    const origOnstop = state.mediaRecorder.onstop;
+    state.mediaRecorder.onstop = async () => {
+      if (origOnstop) await origOnstop.call(state.mediaRecorder);
+      resolve();
+    };
+    state.mediaRecorder.stop();
+    state.recording = false;
+    btnDub.textContent = 'Start Dub';
+    setBadge('🟢 Watch Mode', 'watch');
+  });
+}
+
+// ─── Start Dub ──────────────────────────────────────────────
+btnDub.addEventListener('click', async () => {
+  stopDubMode();
+  if (state.recording) {
+    await stopRecording();
+    video.muted = false;
+    btnDub.textContent = 'Start Dub';
+    setBadge('🟢 Watch Mode', 'watch');
+    return;
+  }
+  video.muted = true;
+  if (video.paused) video.play();
+  btnDub.textContent = '⏹ Stop Dub';
+  setBadge('🎤 Dub Mode — Recording...', 'dub');
+  await startRecording();
+});
+
+// ─── Play My Dub ────────────────────────────────────────────
+btnPlayDub.addEventListener('click', async () => {
+  if (!state.mixedUrl) return;
+  if (state.recording) {
+    await stopRecording();
+    video.muted = false;
+  }
+  stopDubMode();
+  state.loopA = -1;
+  state.loopB = -1;
+  state.loopEnabled = false;
+  loopLabel.textContent = fmtLoop();
+  renderLoopMarkers();
+  renderClipList();
+  const audio = new Audio();
+  audio.preload = 'auto';
+  audio.src = state.mixedUrl;
+  audio.currentTime = 0;
+  state.dubAudio = audio;
+  video.currentTime = 0;
+  video.muted = dubMuted;
+  video.play();
+  state.dubMode = 'play';
+  setBadge('🎧 Playing all dubs', 'play');
+  const doPlay = () => {
+    audio.play().catch(() => {});
+  };
+  if (audio.readyState >= 2) {
+    doPlay();
+  } else {
+    audio.addEventListener('canplay', doPlay, { once: true });
+  }
+  audio.onended = () => {
+    stopDubMode();
+    video.muted = false;
+    setBadge('🟢 Watch Mode', 'watch');
+  };
+});
+
+// ─── Play Latest Dub ────────────────────────────────────────
+btnPlayLatest.addEventListener('click', async () => {
+  if (!state.mixedUrl || state.clips.length === 0) return;
+  if (state.recording) {
+    await stopRecording();
+    video.muted = false;
+  }
+  stopDubMode();
+  const latest = state.clips[state.clips.length - 1];
+  const startTime = state.loopA >= 0 ? state.loopA : latest.startTime;
+  const audio = new Audio();
+  audio.preload = 'auto';
+  audio.src = latest.url;
+  audio.currentTime = Math.max(0, startTime - latest.startTime);
+  state.dubAudio = audio;
+  video.currentTime = startTime;
+  video.muted = dubMuted;
+  video.play();
+  state.dubMode = 'playLatest';
+  setBadge('🎧 Playing latest dub', 'play');
+  const doPlay = () => {
+    audio.play().catch(() => {});
+  };
+  if (audio.readyState >= 2) {
+    doPlay();
+  } else {
+    audio.addEventListener('canplay', doPlay, { once: true });
+  }
+  audio.onended = () => {
+    stopDubMode();
+    video.muted = false;
+    setBadge('🟢 Watch Mode', 'watch');
+  };
+});
+
+// ─── Keyboard ────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === ' ' || e.key === 'Space') {
+    e.preventDefault();
+    if (video.paused) video.play();
+    else video.pause();
+  }
+});
