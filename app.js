@@ -271,9 +271,12 @@ async function mixClips() {
     return;
   }
   if (state.clips.length === 1) {
-    // Don't revoke — old mixedUrl might be a clip's URL still in use
-    state.mixedUrl = state.clips[0].url;
-    return;
+    // 即使只有一个 clip 也混成 WAV，确保格式统一可播放
+    const single = state.clips[0];
+    // 如果 mixedUrl 已经是这个 clip 的 url，且 oldMixedUrl 相同，什么也不做
+    if (state.mixedUrl && state.mixedUrl === single.url) {
+      return;
+    }
   }
 
   const oldMixedUrl = state.mixedUrl;
