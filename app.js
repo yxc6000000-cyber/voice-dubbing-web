@@ -179,6 +179,9 @@ function renderClipList() {
       e.stopPropagation();
       toggleClipLoop(clip);
     });
+    item.addEventListener('click', (e) => {
+      toggleClipLoop(clip);
+    });
     item.querySelector('.clip-del').addEventListener('click', (e) => {
       e.stopPropagation();
       deleteClip(i);
@@ -213,7 +216,7 @@ function toggleClipLoop(clip) {
   renderLoopMarkers();
   renderClipList();
   video.currentTime = clip.startTime;
-  video.muted = false;
+  video.muted = true;
   video.play();
   setBadge(`🔁 Looping clip #${state.clips.indexOf(clip) + 1}`, 'play');
 }
@@ -542,20 +545,27 @@ btnPlayDub.addEventListener('click', async () => {
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = state.mixedUrl;
-  audio.currentTime = 0;
   state.dubAudio = audio;
   video.currentTime = 0;
   video.muted = dubMuted;
-  video.play();
   state.dubMode = 'play';
   setBadge('🎧 Playing all dubs', 'play');
-  const doPlay = () => {
-    audio.play().catch(() => {});
+
+  // Wait for audio to be ready, then start video+audio together.
+  // The .catch on play() swallows autoplay-policy rejections silently.
+  const startPlayback = async () => {
+    try { await video.play(); } catch (_) {}
+    try { await audio.play(); } catch (_) {}
   };
+
   if (audio.readyState >= 2) {
-    doPlay();
+    await startPlayback();
   } else {
-    audio.addEventListener('canplay', doPlay, { once: true });
+    await new Promise(resolve => {
+      audio.addEventListener('canplay', resolve, { once: true });
+      audio.addEventListener('error', resolve, { once: true });
+    });
+    await startPlayback();
   }
   audio.onended = () => {
     stopDubMode();
@@ -577,20 +587,27 @@ btnPlayLatest.addEventListener('click', async () => {
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = latest.url;
-  audio.currentTime = Math.max(0, startTime - latest.startTime);
   state.dubAudio = audio;
   video.currentTime = startTime;
   video.muted = dubMuted;
-  video.play();
   state.dubMode = 'playLatest';
   setBadge('🎧 Playing latest dub', 'play');
-  const doPlay = () => {
-    audio.play().catch(() => {});
+
+  // Wait for audio to be ready, then start video+audio together.
+  const startPlayback = async () => {
+    try { audio.currentTime = Math.max(0, startTime - latest.startTime); } catch (_) {}
+    try { await video.play(); } catch (_) {}
+    try { await audio.play(); } catch (_) {}
   };
+
   if (audio.readyState >= 2) {
-    doPlay();
+    await startPlayback();
   } else {
-    audio.addEventListener('canplay', doPlay, { once: true });
+    await new Promise(resolve => {
+      audio.addEventListener('canplay', resolve, { once: true });
+      audio.addEventListener('error', resolve, { once: true });
+    });
+    await startPlayback();
   }
   audio.onended = () => {
     stopDubMode();
