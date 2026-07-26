@@ -422,6 +422,11 @@ video.addEventListener('timeupdate', () => {
     video.play();
   }
   syncDubAudio();
+  // Play My Dub 模式下：在 clip 时间段内静音（听录音），之外播原声
+  if (state.dubMode === 'play') {
+    const inside = state.clips.some(c => video.currentTime >= c.startTime && video.currentTime < c.endTime);
+    video.muted = inside;
+  }
   renderLoopMarkers();
 });
 
@@ -574,7 +579,7 @@ btnPlayDub.addEventListener('click', async () => {
     return;
   }
 
-  // 有录音 → 从 0 开始放 dub，视频不静音（空白时段放原声）
+  // 有录音 → 从 0 开始放 dub，timeupdate 自动切换静音
   video.currentTime = 0;
   const audio = new Audio();
   audio.preload = 'auto';
