@@ -561,18 +561,17 @@ btnPlayDub.addEventListener('click', async () => {
   loopLabel.textContent = fmtLoop();
   renderLoopMarkers();
   renderClipList();
-  video.currentTime = 0;
 
   if (!state.mixedUrl) {
-    // 没有录音 → 放原声
+    // 没有录音 → 当 Watch Mode 直接播原声
     video.muted = false;
-    state.dubMode = 'play';
-    setBadge('🔊 Playing original', 'play');
+    setBadge('🟢 Watch Mode', 'watch');
     try { await video.play(); } catch (_) {}
     return;
   }
 
-  // 有录音 → 放 dub
+  // 有录音 → 从 0 开始放 dub
+  video.currentTime = 0;
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = state.mixedUrl;
