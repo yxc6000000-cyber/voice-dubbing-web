@@ -535,7 +535,7 @@ function stopRecording() {
     };
     state.mediaRecorder.stop();
     state.recording = false;
-    btnDub.textContent = 'Start Dub';
+    btnDub.textContent = 'Dub';
     setBadge('🟢 Watch Mode', 'watch');
   });
 }
@@ -546,13 +546,13 @@ btnDub.addEventListener('click', async () => {
   if (state.recording) {
     await stopRecording();
     video.muted = false;
-    btnDub.textContent = 'Start Dub';
+    btnDub.textContent = 'Dub';
     setBadge('🟢 Watch Mode', 'watch');
     return;
   }
   video.muted = true;
   if (video.paused) video.play();
-  btnDub.textContent = '⏹ Stop Dub';
+  btnDub.textContent = '⏹ Dub';
   setBadge('🎤 Dub Mode — Recording...', 'dub');
   await startRecording();
 });
