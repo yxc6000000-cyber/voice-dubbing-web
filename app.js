@@ -574,13 +574,13 @@ btnPlayDub.addEventListener('click', async () => {
     return;
   }
 
-  // 有录音 → 从 0 开始放 dub
+  // 有录音 → 从 0 开始放 dub，视频不静音（空白时段放原声）
   video.currentTime = 0;
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = state.mixedUrl;
   state.dubAudio = audio;
-  video.muted = dubMuted;
+  video.muted = false;
   state.dubMode = 'play';
   setBadge('🎧 Playing all dubs', 'play');
 
