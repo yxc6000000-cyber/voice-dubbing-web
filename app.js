@@ -366,8 +366,10 @@ function loadVideo(file) {
   renderClipList();
   enableWhenLoaded();
   setBadge('🟢 Watch Mode', 'watch');
-  // 自动恢复之前保存的 clip
-  restoreClips(file.name);
+  // 视频加载完成后恢复 clips
+  video.addEventListener('canplay', () => {
+    restoreClips(file.name);
+  }, { once: true });
 }
 
 async function restoreClips(videoKey) {
