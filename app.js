@@ -82,7 +82,6 @@ const importBtn = document.getElementById('importBtn');
 const btnImport = document.getElementById('btnImport');
 const btnDub = document.getElementById('btnDub');
 const btnPlayDub = document.getElementById('btnPlayDub');
-const btnPlayLatest = document.getElementById('btnPlayLatest');
 const muteToggle = document.getElementById('muteToggle');
 const muteIcon = document.getElementById('muteIcon');
 const seekBar = document.getElementById('seekBar');
@@ -120,8 +119,7 @@ function setBadge(text, cls) {
 function enableWhenLoaded() {
   const ok = state.videoLoaded;
   btnDub.disabled = !ok;
-  btnPlayDub.disabled = !(ok && state.clips.length > 0);
-  btnPlayLatest.disabled = !(ok && state.clips.length > 0);
+  btnPlayDub.disabled = !ok;
 }
 
 function fmtLoop() {
@@ -273,11 +271,12 @@ async function mixClips() {
     return;
   }
   if (state.clips.length === 1) {
-    if (state.mixedUrl) URL.revokeObjectURL(state.mixedUrl);
+    // Don't revoke — old mixedUrl might be a clip's URL still in use
     state.mixedUrl = state.clips[0].url;
     return;
   }
 
+  const oldMixedUrl = state.mixedUrl;
   const sampleRate = 48000;
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   const bufLen = Math.ceil(video.duration * sampleRate);
@@ -321,8 +320,8 @@ async function mixClips() {
   }
 
   const blob = new Blob([wav], { type: 'audio/wav' });
-  if (state.mixedUrl && state.clips.length > 1) URL.revokeObjectURL(state.mixedUrl);
   state.mixedUrl = URL.createObjectURL(blob);
+  if (oldMixedUrl) URL.revokeObjectURL(oldMixedUrl);
   audioCtx.close();
 }
 
@@ -339,7 +338,6 @@ function stopDubMode() {
 
 function syncDubAudio() {
   if (!state.dubAudio || !state.dubAudio.src) return;
-  if (state.dubMode === 'playLatest') return;
   const offset = video.currentTime;
   const diff = Math.abs(state.dubAudio.currentTime - offset);
   if (diff > 0.5) {
@@ -552,7 +550,6 @@ btnDub.addEventListener('click', async () => {
 
 // ─── Play My Dub ────────────────────────────────────────────
 btnPlayDub.addEventListener('click', async () => {
-  if (!state.mixedUrl) return;
   if (state.recording) {
     await stopRecording();
     video.muted = false;
@@ -564,60 +561,27 @@ btnPlayDub.addEventListener('click', async () => {
   loopLabel.textContent = fmtLoop();
   renderLoopMarkers();
   renderClipList();
+  video.currentTime = 0;
+
+  if (!state.mixedUrl) {
+    // 没有录音 → 放原声
+    video.muted = false;
+    state.dubMode = 'play';
+    setBadge('🔊 Playing original', 'play');
+    try { await video.play(); } catch (_) {}
+    return;
+  }
+
+  // 有录音 → 放 dub
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = state.mixedUrl;
   state.dubAudio = audio;
-  video.currentTime = 0;
   video.muted = dubMuted;
   state.dubMode = 'play';
   setBadge('🎧 Playing all dubs', 'play');
 
-  // Wait for audio to be ready, then start video+audio together.
-  // The .catch on play() swallows autoplay-policy rejections silently.
   const startPlayback = async () => {
-    try { await video.play(); } catch (_) {}
-    try { await audio.play(); } catch (_) {}
-  };
-
-  if (audio.readyState >= 2) {
-    await startPlayback();
-  } else {
-    await new Promise(resolve => {
-      audio.addEventListener('canplay', resolve, { once: true });
-      audio.addEventListener('error', resolve, { once: true });
-    });
-    await startPlayback();
-  }
-  audio.onended = () => {
-    stopDubMode();
-    video.muted = false;
-    setBadge('🟢 Watch Mode', 'watch');
-  };
-});
-
-// ─── Play Latest Dub ────────────────────────────────────────
-btnPlayLatest.addEventListener('click', async () => {
-  if (!state.mixedUrl || state.clips.length === 0) return;
-  if (state.recording) {
-    await stopRecording();
-    video.muted = false;
-  }
-  stopDubMode();
-  const latest = state.clips[state.clips.length - 1];
-  const startTime = state.loopA >= 0 ? state.loopA : latest.startTime;
-  const audio = new Audio();
-  audio.preload = 'auto';
-  audio.src = latest.url;
-  state.dubAudio = audio;
-  video.currentTime = startTime;
-  video.muted = dubMuted;
-  state.dubMode = 'playLatest';
-  setBadge('🎧 Playing latest dub', 'play');
-
-  // Wait for audio to be ready, then start video+audio together.
-  const startPlayback = async () => {
-    try { audio.currentTime = Math.max(0, startTime - latest.startTime); } catch (_) {}
     try { await video.play(); } catch (_) {}
     try { await audio.play(); } catch (_) {}
   };
