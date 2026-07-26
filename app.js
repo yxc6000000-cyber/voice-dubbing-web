@@ -581,8 +581,22 @@ btnPlayDub.addEventListener('click', async () => {
   setBadge('🎧 Playing all dubs', 'play');
 
   const startPlayback = async () => {
+    try {
+      audio.currentTime = 0;
+      await audio.play();
+      console.log('Play My Dub: audio playing, src length:', audio.duration);
+    } catch (e) {
+      console.error('Play My Dub: audio.play() blocked:', e.name, e.message);
+      setBadge('❌ Audio blocked — click again', 'watch');
+      return;
+    }
     try { await video.play(); } catch (_) {}
-    try { await audio.play(); } catch (_) {}
+  };
+
+  audio.onended = () => {
+    stopDubMode();
+    video.muted = false;
+    setBadge('🟢 Watch Mode', 'watch');
   };
 
   if (audio.readyState >= 2) {
@@ -594,11 +608,6 @@ btnPlayDub.addEventListener('click', async () => {
     });
     await startPlayback();
   }
-  audio.onended = () => {
-    stopDubMode();
-    video.muted = false;
-    setBadge('🟢 Watch Mode', 'watch');
-  };
 });
 
 // ─── Keyboard ────────────────────────────────────────────
