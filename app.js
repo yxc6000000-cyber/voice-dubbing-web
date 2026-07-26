@@ -200,6 +200,7 @@ function toggleClipLoop(clip) {
     renderLoopMarkers();
     renderClipList();
     video.muted = false;
+    stopDubMode();
     setBadge('🟢 Watch Mode', 'watch');
     return;
   }
@@ -215,9 +216,30 @@ function toggleClipLoop(clip) {
   loopLabel.textContent = fmtLoop();
   renderLoopMarkers();
   renderClipList();
+
+  // 播放 clip 音频
+  const audio = new Audio();
+  audio.preload = 'auto';
+  audio.src = clip.url;
+  audio.loop = true;
+  state.dubAudio = audio;
+  state.dubMode = 'playClip';
+
   video.currentTime = clip.startTime;
   video.muted = true;
-  video.play();
+
+  const startPlayback = async () => {
+    try { await video.play(); } catch (_) {}
+    try { await audio.play(); } catch (_) {}
+  };
+
+  if (audio.readyState >= 2) {
+    startPlayback();
+  } else {
+    audio.addEventListener('canplay', startPlayback, { once: true });
+    audio.addEventListener('error', startPlayback, { once: true });
+  }
+
   setBadge(`🔁 Looping clip #${state.clips.indexOf(clip) + 1}`, 'play');
 }
 
