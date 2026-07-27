@@ -85,6 +85,8 @@ const btnDub = document.getElementById('btnDub');
 const btnPlayDub = document.getElementById('btnPlayDub');
 const muteToggle = document.getElementById('muteToggle');
 const muteIcon = document.getElementById('muteIcon');
+const clipMuteToggle = document.getElementById('clipMuteToggle');
+const clipMuteIcon = document.getElementById('clipMuteIcon');
 const seekBar = document.getElementById('seekBar');
 const timeDisplay = document.getElementById('timeDisplay');
 const statusBadge = document.getElementById('statusBadge');
@@ -97,11 +99,17 @@ const clipListEl = document.getElementById('clipList');
 
 // ─── Dub mute toggle ─────────────────────────────────────
 let dubMuted = true;
+let clipMuted = false;
 
 muteToggle.addEventListener('click', () => {
   dubMuted = !dubMuted;
   muteIcon.textContent = dubMuted ? '🔇' : '🔊';
   if (state.dubMode) video.muted = dubMuted;
+});
+
+clipMuteToggle.addEventListener('click', () => {
+  clipMuted = !clipMuted;
+  clipMuteIcon.textContent = clipMuted ? '🎙️🔇' : '🎙️';
 });
 
 // ─── Format helpers ──────────────────────────────────────
@@ -238,7 +246,9 @@ function toggleClipLoop(clip) {
 
   const startPlayback = async () => {
     try { await video.play(); } catch (_) {}
-    try { await audio.play(); } catch (_) {}
+    if (!clipMuted) {
+      try { await audio.play(); } catch (_) {}
+    }
   };
 
   if (audio.readyState >= 2) {
@@ -607,9 +617,13 @@ btnPlayDub.addEventListener('click', async () => {
 
   const startPlayback = async () => {
     try {
-      audio.currentTime = 0;
-      await audio.play();
-      console.log('Play My Dub: audio playing, src length:', audio.duration);
+      if (!clipMuted) {
+        audio.currentTime = 0;
+        await audio.play();
+        console.log('Play My Dub: audio playing, src length:', audio.duration);
+      } else {
+        console.log('Play My Dub: clip muted, playing video only');
+      }
     } catch (e) {
       console.error('Play My Dub: audio.play() blocked:', e.name, e.message);
       setBadge('❌ Audio blocked — click again', 'watch');
