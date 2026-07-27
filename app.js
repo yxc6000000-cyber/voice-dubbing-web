@@ -73,6 +73,7 @@ const state = {
   loopEnabled: false,
   dubAudio: null,
   dubMode: null,
+  playingClipId: null,
 };
 
 // ─── DOM refs ──────────────────────────────────────────────
@@ -189,39 +190,34 @@ function renderClipList() {
 }
 
 function toggleClipLoop(clip) {
-  // 如果已经在 loop 这个 clip，就取消 loop
-  if (state.loopEnabled && state.loopA === clip.startTime && state.loopB === clip.endTime) {
-    state.loopEnabled = false;
-    state.loopA = -1;
-    state.loopB = -1;
-    loopLabel.textContent = fmtLoop();
-    renderLoopMarkers();
-    renderClipList();
-    video.muted = false;
+  // 如果正在播放同一个 clip，就停止（点同一个 toggle off）
+  if (state.dubMode === 'playClip' && state.playingClipId === clip.id) {
     stopDubMode();
+    video.muted = false;
     setBadge('🟢 Watch Mode', 'watch');
     return;
   }
-  // 否则开始 loop 这个 clip
+  // 停止之前的播放，播新的
   stopDubMode();
   if (state.recording) {
     stopRecording();
     video.muted = false;
   }
-  state.loopA = clip.startTime;
-  state.loopB = clip.endTime;
-  state.loopEnabled = true;
-  loopLabel.textContent = fmtLoop();
-  renderLoopMarkers();
-  renderClipList();
 
-  // 播放 clip 音频
+  // clip.url 是持久 blob URL，直接复用
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = clip.url;
-  audio.loop = true;
+  audio.loop = false;
   state.dubAudio = audio;
   state.dubMode = 'playClip';
+  state.playingClipId = clip.id;
+
+  audio.onended = () => {
+    stopDubMode();
+    video.muted = false;
+    setBadge('🟢 Watch Mode', 'watch');
+  };
 
   video.currentTime = clip.startTime;
   video.muted = true;
@@ -238,7 +234,7 @@ function toggleClipLoop(clip) {
     audio.addEventListener('error', startPlayback, { once: true });
   }
 
-  setBadge(`🔁 Looping clip #${state.clips.indexOf(clip) + 1}`, 'play');
+  setBadge(`▶ Playing clip #${state.clips.indexOf(clip) + 1}`, 'play');
 }
 
 function deleteClip(idx) {
@@ -336,10 +332,15 @@ function stopDubMode() {
     state.dubAudio = null;
   }
   state.dubMode = null;
+  state.playingClipId = null;
 }
 
 function syncDubAudio() {
   if (!state.dubAudio || !state.dubAudio.src) return;
+  // playClip 模式：视频从 clip.startTime 开始，音频从 0 开始，
+  // 两者速率相同，不需要同步
+  if (state.dubMode === 'playClip') return;
+  // play 模式（Play Dub）：视频和音频都从 0 开始，直接比较
   const offset = video.currentTime;
   const diff = Math.abs(state.dubAudio.currentTime - offset);
   if (diff > 0.5) {
