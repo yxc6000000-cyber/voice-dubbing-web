@@ -196,8 +196,8 @@ body {
   cursor: pointer;
   transition: background 0.2s, height 0.15s;
 }
-.clip-marker:hover { background: rgba(76, 175, 80, 0.8); height: 12px; }
-.clip-marker.active { background: #4caf50; height: 14px; z-index: 11; }
+.clip-marker:hover { background: rgba(76, 175, 80, 0.8); height: 10px; }
+.clip-marker.active { background: #4caf50; height: 10px; z-index: 11; }
 
 #timeDisplay {
   font-size: 18px;
