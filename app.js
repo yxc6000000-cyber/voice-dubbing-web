@@ -154,13 +154,21 @@ function renderClipMarkers() {
   if (!state.videoLoaded || !video.duration) return;
   const wrapper = document.querySelector('.seek-wrapper');
   if (!wrapper) return;
-  for (const clip of state.clips) {
+  for (let i = 0; i < state.clips.length; i++) {
+    const clip = state.clips[i];
     const startPct = (clip.startTime / video.duration) * 100;
     const endPct = (clip.endTime / video.duration) * 100;
     const m = document.createElement('div');
-    m.className = 'clip-marker';
+    m.className = 'clip-marker' + (state.playingClipId === clip.id ? ' active' : '');
     m.style.left = startPct + '%';
     m.style.width = Math.max(0.5, endPct - startPct) + '%';
+    m.dataset.idx = i;
+    m.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = parseInt(e.currentTarget.dataset.idx);
+      const c = state.clips[idx];
+      if (c) toggleClipLoop(c);
+    });
     wrapper.appendChild(m);
   }
 }
@@ -170,7 +178,7 @@ function renderClipList() {
   clipListEl.innerHTML = '';
   for (let i = 0; i < state.clips.length; i++) {
     const clip = state.clips[i];
-    const isActive = state.loopEnabled && state.loopA === clip.startTime && state.loopB === clip.endTime;
+    const isActive = state.playingClipId === clip.id;
     const item = document.createElement('div');
     item.className = 'clip-item' + (isActive ? ' active' : '');
     item.innerHTML = `<span class="clip-num">#${i + 1}</span><span class="clip-time">${fmt(clip.startTime)} - ${fmt(clip.endTime)}</span><span class="clip-play-icon">${isActive ? '⏹' : '▶'}</span><span class="clip-del" data-idx="${i}">✕</span>`;
@@ -194,6 +202,8 @@ function toggleClipLoop(clip) {
   if (state.dubMode === 'playClip' && state.playingClipId === clip.id) {
     stopDubMode();
     video.muted = false;
+    renderClipMarkers();
+    renderClipList();
     setBadge('🟢 Watch Mode', 'watch');
     return;
   }
@@ -216,11 +226,15 @@ function toggleClipLoop(clip) {
   audio.onended = () => {
     stopDubMode();
     video.muted = false;
+    renderClipMarkers();
+    renderClipList();
     setBadge('🟢 Watch Mode', 'watch');
   };
 
   video.currentTime = clip.startTime;
   video.muted = true;
+  renderClipMarkers();
+  renderClipList();
 
   const startPlayback = async () => {
     try { await video.play(); } catch (_) {}
