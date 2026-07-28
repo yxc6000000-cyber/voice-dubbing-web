@@ -1,0 +1,10 @@
+{
+  "name": "voice-dubbing-web",
+  "version": "1.0.0",
+  "description": "Voice dubbing web app",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {}
+}

@@ -67,6 +67,8 @@ const state = {
   mediaRecorder: null,
   recordedChunks: [],
   clips: [],
+  clipsOrder: [],  // 记录插入顺序，用于删除最新录音
+  clipsHistory: [],  // 撤销栈：被删除的 clip { id, blob, url, startTime, endTime }
   mixedUrl: null,
   loopA: -1,
   loopB: -1,
@@ -93,6 +95,7 @@ const statusBadge = document.getElementById('statusBadge');
 const btnSetA = document.getElementById('btnSetA');
 const btnSetB = document.getElementById('btnSetB');
 const btnClearLoop = document.getElementById('btnClearLoop');
+const btnPlayFromA = document.getElementById('btnPlayFromA');
 const loopLabel = document.getElementById('loopLabel');
 const overlay = document.getElementById('videoOverlay');
 const clipListEl = document.getElementById('clipList');
@@ -188,6 +191,7 @@ function renderClipMarkers() {
 function renderClipList() {
   if (!clipListEl) return;
   clipListEl.innerHTML = '';
+  state.clips.sort((a, b) => a.startTime - b.startTime);
   for (let i = 0; i < state.clips.length; i++) {
     const clip = state.clips[i];
     const isActive = state.playingClipId === clip.id;
@@ -266,9 +270,13 @@ function toggleClipLoop(clip) {
 function deleteClip(idx) {
   const clip = state.clips[idx];
   if (!clip) return;
+  // 保存到撤销栈
+  state.clipsHistory.push({ id: clip.id, blob: clip.blob, url: clip.url, startTime: clip.startTime, endTime: clip.endTime });
   URL.revokeObjectURL(clip.url);
   clip.blob = null;
   state.clips.splice(idx, 1);
+  const orderIdx = state.clipsOrder.indexOf(clip.id);
+  if (orderIdx >= 0) state.clipsOrder.splice(orderIdx, 1);
   if (state.mixedUrl && state.clips.length > 1) {
     URL.revokeObjectURL(state.mixedUrl);
     state.mixedUrl = null;
@@ -383,6 +391,7 @@ function loadVideo(file) {
   state.videoLoaded = true;
   state.videoKey = file.name;
   state.clips = [];
+  state.clipsOrder = [];
   state.mixedUrl = null;
   state.loopA = -1;
   state.loopB = -1;
@@ -408,7 +417,10 @@ async function restoreClips(videoKey) {
   for (const item of saved.clips) {
     const blob = item.data;
     const url = URL.createObjectURL(blob);
-    state.clips.push({ id: item.id, blob, url, startTime: item.startTime, endTime: item.endTime });
+    state.clipsOrder.push(item.id);
+    const idx = state.clips.findIndex(c => c.startTime > item.startTime);
+    if (idx < 0) state.clips.push({ id: item.id, blob, url, startTime: item.startTime, endTime: item.endTime });
+    else state.clips.splice(idx, 0, { id: item.id, blob, url, startTime: item.startTime, endTime: item.endTime });
   }
   await mixClips();
   renderClipMarkers();
@@ -518,6 +530,13 @@ btnClearLoop.addEventListener('click', () => {
   if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
 });
 
+btnPlayFromA.addEventListener('click', () => {
+  if (!state.videoLoaded) return;
+  if (state.loopA < 0) return; // A 点没设，忽略
+  video.currentTime = state.loopA;
+  video.play();
+});
+
 // ─── Recording ───────────────────────────────────────────
 async function startRecording() {
   if (state.recording) return;
@@ -536,7 +555,11 @@ async function startRecording() {
       const blob = new Blob(state.recordedChunks, { type: 'audio/webm' });
       const endTime = video.currentTime;
       const url = URL.createObjectURL(blob);
-      state.clips.push({ id: crypto.randomUUID(), blob, url, startTime: state.recordStartTime, endTime });
+      const newClip = { id: crypto.randomUUID(), blob, url, startTime: state.recordStartTime, endTime };
+      state.clipsOrder.push(newClip.id);
+      const idx = state.clips.findIndex(c => c.startTime > state.recordStartTime);
+      if (idx < 0) state.clips.push(newClip);
+      else state.clips.splice(idx, 0, newClip);
       await mixClips();
       renderClipMarkers();
       renderClipList();
@@ -569,63 +592,89 @@ function stopRecording() {
 }
 
 // ─── Start Dub ──────────────────────────────────────────────
-btnDub.addEventListener('click', async () => {
+let dubKeyPressed = false;
+
+async function startDubFrom(time) {
+  if (state.recording) return;
   stopDubMode();
-  if (state.recording) {
-    await stopRecording();
-    video.muted = false;
-    btnDub.textContent = 'Dub';
-    setBadge('🟢 Watch Mode', 'watch');
-    return;
-  }
+  state.recordStartTime = time;
   video.muted = true;
   if (video.paused) video.play();
   btnDub.textContent = '⏹ Dub';
   setBadge('🎤 Dub Mode — Recording...', 'dub');
   await startRecording();
+}
+
+async function stopDubIfRecording() {
+  if (!state.recording) return;
+  await stopRecording();
+  video.muted = false;
+  btnDub.textContent = 'Dub';
+}
+
+btnDub.addEventListener('mousedown', async () => {
+  if (!state.videoLoaded) return;
+  dubKeyPressed = true;
+  await startDubFrom(video.currentTime);
+});
+
+document.addEventListener('mouseup', async () => {
+  if (dubKeyPressed) {
+    dubKeyPressed = false;
+    await stopDubIfRecording();
+  }
+});
+
+btnDub.addEventListener('mouseleave', async () => {
+  if (dubKeyPressed) {
+    dubKeyPressed = false;
+    await stopDubIfRecording();
+  }
 });
 
 // ─── Play My Dub ────────────────────────────────────────────
 btnPlayDub.addEventListener('click', async () => {
+  // 如果已经在 Play Dub 模式，切回 Watch Mode
+  if (state.dubMode === 'play') {
+    stopDubMode();
+    video.muted = false;
+    setBadge('🟢 Watch Mode', 'watch');
+    btnPlayDub.textContent = '🟢 Watch Mode';
+    return;
+  }
+
   if (state.recording) {
     await stopRecording();
     video.muted = false;
   }
   stopDubMode();
-  state.loopA = -1;
-  state.loopB = -1;
-  state.loopEnabled = false;
-  loopLabel.textContent = fmtLoop();
-  renderLoopMarkers();
-  renderClipList();
 
   if (!state.mixedUrl) {
-    // 没有录音 → 当 Watch Mode 直接播原声
     video.muted = false;
     setBadge('🟢 Watch Mode', 'watch');
+    btnPlayDub.textContent = '🟢 Watch Mode';
     try { await video.play(); } catch (_) {}
     return;
   }
 
-  // 有录音 → 从 0 开始放 dub，timeupdate 自动切换静音
-  video.currentTime = 0;
+  // 有录音 → 从当前时间开始播放配音
   const audio = new Audio();
   audio.preload = 'auto';
   audio.src = state.mixedUrl;
+  audio.currentTime = video.currentTime;
   state.dubAudio = audio;
   video.muted = false;
   state.dubMode = 'play';
-  setBadge('🎧 Playing all dubs', 'play');
+  setBadge('🎧 Dub Mode', 'play');
+  btnPlayDub.textContent = '🎧 Dub Mode';
 
   const startPlayback = async () => {
     try {
-      audio.currentTime = 0;
       audio.volume = clipMuted ? 0 : 1;
       await audio.play();
-      console.log('Play My Dub: audio playing, src length:', audio.duration);
     } catch (e) {
-      console.error('Play My Dub: audio.play() blocked:', e.name, e.message);
       setBadge('❌ Audio blocked — click again', 'watch');
+      btnPlayDub.textContent = '🟢 Watch Mode';
       return;
     }
     try { await video.play(); } catch (_) {}
@@ -635,6 +684,7 @@ btnPlayDub.addEventListener('click', async () => {
     stopDubMode();
     video.muted = false;
     setBadge('🟢 Watch Mode', 'watch');
+    btnPlayDub.textContent = '🟢 Watch Mode';
   };
 
   if (audio.readyState >= 2) {
@@ -650,10 +700,90 @@ btnPlayDub.addEventListener('click', async () => {
 
 // ─── Keyboard ────────────────────────────────────────────
 document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT') return;
+  const tag = e.target.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && !['range', 'button', 'submit', 'checkbox', 'radio'].includes(e.target.type))) return;
   if (e.key === ' ' || e.key === 'Space') {
     e.preventDefault();
     if (video.paused) video.play();
     else video.pause();
+  }
+  if (e.key === 'a' || e.key === 'A') {
+    if (state.videoLoaded) {
+      e.preventDefault();
+      btnSetA.click();
+    }
+  }
+  if (e.key === 'f' || e.key === 'F') {
+    if (state.videoLoaded) {
+      e.preventDefault();
+      startDubFrom(video.currentTime);
+    }
+  }
+  if (e.key === 's' || e.key === 'S') {
+    if (state.videoLoaded && state.loopA >= 0) {
+      e.preventDefault();
+      video.currentTime = state.loopA;
+      video.play();
+    }
+  }
+  if (e.key === 'd' || e.key === 'D') {
+    if (state.clipsOrder.length > 0) {
+      e.preventDefault();
+      const lastId = state.clipsOrder[state.clipsOrder.length - 1];
+      const idx = state.clips.findIndex(c => c.id === lastId);
+      if (idx >= 0) deleteClip(idx);
+    }
+  }
+  // W：播放刚录的 clip（逻辑和 D 一样，改为播放）
+  if (e.key === 'w' || e.key === 'W') {
+    if (state.clipsOrder.length > 0 && state.videoLoaded) {
+      e.preventDefault();
+      const lastId = state.clipsOrder[state.clipsOrder.length - 1];
+      const clip = state.clips.find(c => c.id === lastId);
+      if (clip) toggleClipLoop(clip);
+    }
+  }
+  // Ctrl+Z：撤销上次删除
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+    if (state.clipsHistory.length > 0) {
+      e.preventDefault();
+      const restored = state.clipsHistory.pop();
+      // 重建 blob URL
+      const url = URL.createObjectURL(restored.blob);
+      restored.url = url;
+      // 按时间轴插入
+      const idx = state.clips.findIndex(c => c.startTime > restored.startTime);
+      if (idx < 0) state.clips.push(restored);
+      else state.clips.splice(idx, 0, restored);
+      state.clipsOrder.push(restored.id);
+      mixClips().then(() => {
+        renderClipMarkers();
+        renderClipList();
+        enableWhenLoaded();
+        if (state.videoKey) saveClips(state.videoKey, state.clips, state.loopA, state.loopB);
+      });
+    }
+  }
+  // R：切换 Play Dub / Watch Mode
+  if (e.key === 'r' || e.key === 'R' && !(e.ctrlKey || e.metaKey)) {
+    if (state.videoLoaded) {
+      e.preventDefault();
+      btnPlayDub.click();
+    }
+  }
+  // 左右方向键：前进/后退 3 秒
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    if (state.videoLoaded) video.currentTime = Math.max(0, video.currentTime - 3);
+  }
+  if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    if (state.videoLoaded) video.currentTime = Math.min(video.duration, video.currentTime + 3);
+  }
+});
+
+document.addEventListener('keyup', e => {
+  if (e.key === 'f' || e.key === 'F') {
+    stopDubIfRecording();
   }
 });
